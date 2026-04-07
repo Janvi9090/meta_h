@@ -1,0 +1,7 @@
+name: medication_dosing_env
+description: RL environment for drug dosing and toxicity control
+tasks:
+  - easy
+  - medium
+  - hard
+reward_range: [-2, 1]
