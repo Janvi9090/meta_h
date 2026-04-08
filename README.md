@@ -1,3 +1,15 @@
+---
+title: Medication Dosing Environment
+emoji: 💊
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+tags:
+  - openenv
+license: mit
+---
+
 # 💊 Medication Dosing & Toxicity Control (OpenEnv)
 
 A two-compartment pharmacokinetic simulation for evaluating AI agents on
