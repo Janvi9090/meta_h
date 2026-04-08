@@ -181,6 +181,17 @@ curl -X POST http://localhost:7860/step \
 # Check state
 curl http://localhost:7860/state
 ```
+---
+title: Medication Dosing Env
+emoji: 📚
+colorFrom: yellow
+colorTo: blue
+sdk: docker
+pinned: false
+license: mit
+---
+
+Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
 
 ## 🤖 Agent Modes
 1. **LLM Mode** (when `HF_TOKEN` is set): Uses an OpenAI-compatible model to
