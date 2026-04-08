@@ -1,7 +1,7 @@
 import os
 from openai import OpenAI
-from env.tasks import get_task
-from env.models import Action
+from simulation.tasks import get_task
+from simulation.models import Action
 
 # Env variables
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
