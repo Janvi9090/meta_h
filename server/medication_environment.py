@@ -2,18 +2,14 @@
 Medication Dosing Environment — OpenEnv Environment Implementation.
 
 Wraps the simulation logic to conform to the openenv-core Environment interface.
+This module properly implements the Environment base class with:
+  - reset() returning an Observation (with done, reward, metadata)
+  - step() accepting an Action and returning an Observation
+  - state property returning a State
 """
 
 from typing import Any, Optional
 from uuid import uuid4
-
-try:
-    from openenv.core.env_server.types import Action, Observation, State
-    from openenv.core.env_server.environment import Environment
-
-    OPENENV_AVAILABLE = True
-except ImportError:
-    OPENENV_AVAILABLE = False
 
 import sys
 import os
@@ -23,6 +19,17 @@ from simulation.environment import MedicationEnv
 from simulation.models import Action as MedAction
 from simulation.tasks import TASK_CONFIGS
 
+try:
+    from openenv.core.env_server.interfaces import Environment
+    from openenv.core.env_server.types import (
+        Action as OEAction,
+        Observation as OEObservation,
+        State as OEState,
+    )
+    OPENENV_AVAILABLE = True
+except ImportError:
+    OPENENV_AVAILABLE = False
+
 
 if OPENENV_AVAILABLE:
     class MedicationDosingEnvironment(Environment):
@@ -31,48 +38,57 @@ if OPENENV_AVAILABLE:
 
         Wraps the two-compartment pharmacokinetic simulation to provide
         the standard reset/step/state interface required by openenv-core.
+
+        Key conformance points:
+        - reset() returns OEObservation with done=False, reward=None, metadata={}
+        - step() returns OEObservation with done, reward, metadata
+        - state is a property returning OEState
         """
 
         def __init__(self):
+            super().__init__()
             self._task = "easy"
             self._env = MedicationEnv(**TASK_CONFIGS[self._task])
-            self._state = State(episode_id=str(uuid4()), step_count=0)
+            self._state = OEState(episode_id=str(uuid4()), step_count=0)
 
         def reset(
             self,
             seed: Optional[int] = None,
             episode_id: Optional[str] = None,
             **kwargs: Any,
-        ) -> Observation:
+        ) -> OEObservation:
             task = kwargs.get("task", "easy")
             if task in TASK_CONFIGS:
                 self._task = task
                 self._env = MedicationEnv(**TASK_CONFIGS[task])
 
             obs = self._env.reset()
-            self._state = State(
+            self._state = OEState(
                 episode_id=episode_id or str(uuid4()),
                 step_count=0,
             )
 
-            return Observation(
+            # Return proper OpenEnv Observation
+            obs_data = obs.model_dump()
+            return OEObservation(
                 done=False,
-                reward=0.0,
+                reward=None,
                 metadata={
-                    "status": "ready",
                     "task": self._task,
-                    "observation": obs.model_dump(),
                     "therapeutic_window": [self._env.THERAPEUTIC_LOW, self._env.THERAPEUTIC_HIGH],
+                    "toxic_threshold": self._env.TOXIC_THRESHOLD,
                     "target": self._env.TARGET,
+                    "max_steps": self._env.max_steps,
+                    **obs_data,
                 },
             )
 
         def step(
             self,
-            action: Action,
+            action: OEAction,
             timeout_s: Optional[float] = None,
             **kwargs: Any,
-        ) -> Observation:
+        ) -> OEObservation:
             self._state.step_count += 1
 
             # Extract dose from action
@@ -85,18 +101,23 @@ if OPENENV_AVAILABLE:
             med_action = MedAction(dose=max(0.0, min(20.0, dose)))
             obs, reward, done, info = self._env.step(med_action)
 
-            return Observation(
+            obs_data = obs.model_dump()
+            return OEObservation(
                 done=done,
                 reward=reward,
                 metadata={
-                    "observation": obs.model_dump(),
-                    "info": info,
+                    **obs_data,
+                    **info,
                 },
             )
 
         @property
-        def state(self) -> State:
+        def state(self) -> OEState:
             return self._state
+
+        def close(self) -> None:
+            """Clean up resources."""
+            pass
 
 else:
     # Placeholder if openenv-core not available
