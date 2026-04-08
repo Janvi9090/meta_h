@@ -1,30 +1,6 @@
-name: medication-dosing-env
-description: Two-compartment pharmacokinetic simulation for AI medication dosing with patient profiles, clinical events, and multi-criteria grading
-version: "1.0"
-tasks:
-  - easy
-  - medium
-  - hard
-entry_point: inference.py
-action_space:
-  type: continuous
-  fields:
-    dose:
-      type: float
-      min: 0.0
-      max: 20.0
-observation_space:
-  type: structured
-  fields:
-    - concentration
-    - secondary_concentration
-    - metabolism_rate
-    - last_dose
-    - toxicity_flag
-    - patient_weight
-    - renal_function
-    - heart_rate
-    - clinical_event
-    - time_in_therapeutic
-    - concentration_trend
-reward_range: [-3.0, 1.3]
+spec_version: 1
+name: medication_dosing_env
+type: space
+runtime: fastapi
+app: server.app:app
+port: 7860
