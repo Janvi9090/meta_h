@@ -1,16 +1,12 @@
 """
-Medication Dosing Environment Server Application.
+Medication Dosing Environment — FastAPI Server (OpenEnv HTTP API).
 
-Creates a FastAPI app that conforms to the OpenEnv HTTP API specification.
-
-Two modes:
-  1. If openenv-core is installed → uses create_app() factory (preferred)
-  2. Fallback → standalone FastAPI with OpenEnv-compatible endpoints
-
-The OpenEnv spec requires:
+Implements the OpenEnv-compatible HTTP API specification:
   POST /reset  → ResetResponse {observation: {}, reward: null, done: false}
   POST /step   → StepResponse  {observation: {}, reward: float, done: bool}
   GET  /health → HealthResponse {status: "healthy"}
+  GET  /state  → Current environment state
+  GET  /tasks  → Available task configurations
 
 Usage:
     uvicorn server.app:app --host 0.0.0.0 --port 7860
@@ -18,196 +14,192 @@ Usage:
 
 import sys
 import os
-import traceback
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-try:
-    from openenv.core.env_server import create_app
-    from openenv.core.env_server.types import Action as OEAction, Observation as OEObservation
-    from .medication_environment import MedicationDosingEnvironment
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional
 
-    # Use OpenEnv's create_app factory — this handles the full spec:
-    # /reset, /step, /state, /health, /schema, /ws, /docs
-    app = create_app(
-        MedicationDosingEnvironment,
-        OEAction,
-        OEObservation,
-        env_name="medication_dosing_env",
-    )
-    print("[server] Using openenv-core create_app", flush=True)
+from simulation.environment import MedicationEnv
+from simulation.models import Action as MedAction
+from simulation.tasks import TASK_CONFIGS
 
-except Exception as e:
-    print(f"[server] openenv-core not available ({e}), using standalone FastAPI", flush=True)
-    traceback.print_exc()
+app = FastAPI(
+    title="Medication Dosing OpenEnv",
+    description="Two-compartment pharmacokinetic simulation for AI agent evaluation.",
+    version="1.0.0",
+)
 
-    # ─── Standalone fallback that matches OpenEnv HTTP API ───
-    from fastapi import FastAPI, HTTPException
-    from pydantic import BaseModel, Field
-    from typing import Any, Dict, Optional
+# ─── Per-session env storage ───
+envs: Dict[str, MedicationEnv] = {}
+current_task: str = "easy"
 
-    from simulation.environment import MedicationEnv
-    from simulation.models import Action as MedAction
-    from simulation.tasks import TASK_CONFIGS
 
-    app = FastAPI(
-        title="Medication Dosing OpenEnv",
-        description="Two-compartment pharmacokinetic simulation for AI agent evaluation.",
-        version="1.0",
-    )
+# ─── Request/Response models matching OpenEnv spec ───
 
-    # ─── Per-request env storage ───
-    envs: dict[str, MedicationEnv] = {}
-    current_task: str = "easy"
+class ResetRequest(BaseModel):
+    """Reset request — accepts optional task name and seed."""
+    task: Optional[str] = Field(default=None, description="Task difficulty: easy, medium, hard")
+    seed: Optional[int] = Field(default=None, description="Random seed")
+    episode_id: Optional[str] = Field(default=None, description="Episode ID")
 
-    # ─── Request/Response models matching OpenEnv spec ───
+    class Config:
+        extra = "allow"
 
-    class ResetRequest(BaseModel):
-        """Matches openenv.core.env_server.types.ResetRequest"""
-        seed: Optional[int] = Field(default=None, description="Random seed")
-        episode_id: Optional[str] = Field(default=None, description="Episode ID")
 
-        class Config:
-            extra = "allow"  # Allow extra fields like 'task'
+class StepRequest(BaseModel):
+    """Step request — accepts action dict with dose key."""
+    action: Dict[str, Any] = Field(..., description="Action dict with 'dose' key")
+    timeout_s: Optional[float] = Field(default=None, description="Timeout")
+    request_id: Optional[str] = Field(default=None, description="Request ID")
 
-    class StepRequest(BaseModel):
-        """Matches openenv.core.env_server.types.StepRequest"""
-        action: Dict[str, Any] = Field(..., description="Action dict with 'dose' key")
-        timeout_s: Optional[float] = Field(default=None, description="Timeout")
-        request_id: Optional[str] = Field(default=None, description="Request ID")
+    class Config:
+        extra = "allow"
 
-        class Config:
-            extra = "allow"
 
-    class ResetResponse(BaseModel):
-        """Matches openenv.core.env_server.types.ResetResponse"""
-        observation: Dict[str, Any] = Field(..., description="Initial observation")
-        reward: Optional[float] = Field(default=None, description="Initial reward")
-        done: bool = Field(default=False, description="Episode done flag")
+class ResetResponse(BaseModel):
+    """OpenEnv reset response."""
+    observation: Dict[str, Any] = Field(..., description="Initial observation")
+    reward: Optional[float] = Field(default=None, description="Initial reward")
+    done: bool = Field(default=False, description="Episode done flag")
 
-    class StepResponse(BaseModel):
-        """Matches openenv.core.env_server.types.StepResponse"""
-        observation: Dict[str, Any] = Field(..., description="Observation")
-        reward: Optional[float] = Field(default=None, description="Reward")
-        done: bool = Field(default=False, description="Episode done flag")
 
-    class HealthResponse(BaseModel):
-        status: str = "healthy"
+class StepResponse(BaseModel):
+    """OpenEnv step response."""
+    observation: Dict[str, Any] = Field(..., description="Observation")
+    reward: Optional[float] = Field(default=None, description="Reward")
+    done: bool = Field(default=False, description="Episode done flag")
 
-    # ─── Endpoints matching OpenEnv HTTP spec ───
 
-    @app.get("/health")
-    def health() -> HealthResponse:
-        """Health check — OpenEnv spec."""
-        return HealthResponse(status="healthy")
+class HealthResponse(BaseModel):
+    """Health check response."""
+    status: str = "healthy"
 
-    @app.get("/")
-    def root():
-        """Root health check."""
-        return {"status": "healthy"}
 
-    @app.post("/reset")
-    def reset(req: ResetRequest = ResetRequest()) -> ResetResponse:
-        """
-        Reset the environment — OpenEnv spec compliant.
+# ─── Endpoints matching OpenEnv HTTP spec ───
 
-        Returns ResetResponse with observation dict, reward=None, done=False.
-        """
-        global current_task
+@app.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    """Health check — OpenEnv spec."""
+    return HealthResponse(status="healthy")
 
-        # Check for task in the extra fields
+
+@app.get("/")
+def root():
+    """Root health check."""
+    return {"status": "healthy", "env": "medication-dosing-env", "version": "1.0.0"}
+
+
+@app.post("/reset", response_model=ResetResponse)
+def reset(req: ResetRequest = None) -> ResetResponse:
+    """
+    Reset the environment — OpenEnv spec compliant.
+
+    Accepts optional body with {"task": "easy"|"medium"|"hard"}.
+    Empty body or no body defaults to "easy".
+    """
+    global current_task
+
+    # Handle no body / empty body
+    if req is None:
+        req = ResetRequest()
+
+    # Get task name from explicit field or extra fields
+    task_name = req.task
+    if task_name is None:
         extra = req.model_extra or {}
         task_name = extra.get("task", "easy")
 
-        if task_name not in TASK_CONFIGS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown task: {task_name}. Choose from: {list(TASK_CONFIGS.keys())}",
-            )
-
-        env = MedicationEnv(**TASK_CONFIGS[task_name])
-        obs = env.reset()
-        envs[task_name] = env
-        current_task = task_name
-
-        # Build observation dict — all simulation fields go into observation
-        obs_dict = obs.model_dump()
-
-        # Add env info to observation metadata
-        obs_dict["task"] = task_name
-        obs_dict["therapeutic_window"] = [env.THERAPEUTIC_LOW, env.THERAPEUTIC_HIGH]
-        obs_dict["toxic_threshold"] = env.TOXIC_THRESHOLD
-        obs_dict["target"] = env.TARGET
-        obs_dict["max_steps"] = env.max_steps
-
-        return ResetResponse(
-            observation=obs_dict,
-            reward=None,
-            done=False,
+    if task_name not in TASK_CONFIGS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown task: {task_name}. Choose from: {list(TASK_CONFIGS.keys())}",
         )
 
-    @app.post("/step")
-    def step(req: StepRequest) -> StepResponse:
-        """
-        Execute one step — OpenEnv spec compliant.
+    env = MedicationEnv(**TASK_CONFIGS[task_name])
+    obs = env.reset()
+    envs[task_name] = env
+    current_task = task_name
 
-        Expects action dict with 'dose' key.
-        Returns StepResponse with observation, reward, done.
-        """
-        task_name = current_task
+    # Build observation dict
+    obs_dict = obs.model_dump()
+    obs_dict["task"] = task_name
+    obs_dict["therapeutic_window"] = [env.THERAPEUTIC_LOW, env.THERAPEUTIC_HIGH]
+    obs_dict["toxic_threshold"] = env.TOXIC_THRESHOLD
+    obs_dict["target"] = env.TARGET
+    obs_dict["max_steps"] = env.max_steps
 
-        if task_name not in envs:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Environment not initialized. Call /reset first.",
-            )
+    return ResetResponse(
+        observation=obs_dict,
+        reward=None,
+        done=False,
+    )
 
-        env = envs[task_name]
 
-        # Extract dose from action dict
-        action_data = req.action
-        dose = action_data.get("dose", 0.0)
-        dose = max(0.0, min(20.0, float(dose)))
+@app.post("/step", response_model=StepResponse)
+def step(req: StepRequest) -> StepResponse:
+    """
+    Execute one step — OpenEnv spec compliant.
 
-        action = MedAction(dose=dose)
+    Expects action dict with 'dose' key.
+    Returns StepResponse with observation, reward, done.
+    """
+    task_name = current_task
 
-        try:
-            obs, reward, done, info = env.step(action)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Step error: {str(e)}")
-
-        # Build observation dict
-        obs_dict = obs.model_dump()
-        # Merge info into observation for richer data
-        obs_dict.update(info)
-
-        return StepResponse(
-            observation=obs_dict,
-            reward=round(reward, 4),
-            done=done,
+    if task_name not in envs:
+        raise HTTPException(
+            status_code=400,
+            detail="Environment not initialized. Call /reset first.",
         )
 
-    @app.get("/state")
-    def get_state():
-        """Return current environment state."""
-        task_name = current_task
-        if task_name not in envs:
-            raise HTTPException(status_code=400, detail="Call /reset first.")
-        return envs[task_name].state()
+    env = envs[task_name]
 
-    @app.get("/tasks")
-    def list_tasks():
-        """List available tasks."""
-        tasks = {}
-        for name, config in TASK_CONFIGS.items():
-            tasks[name] = {
-                "max_steps": config["max_steps"],
-                "metabolism_base": config["metabolism_base"],
-                "noise_scale": config["noise_scale"],
-                "clinical_events": config.get("clinical_events", False),
-            }
-        return {"tasks": tasks}
+    # Extract dose from action dict
+    action_data = req.action
+    dose = action_data.get("dose", 0.0)
+    dose = max(0.0, min(20.0, float(dose)))
+
+    action = MedAction(dose=dose)
+
+    try:
+        obs, reward, done, info = env.step(action)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Step error: {str(e)}")
+
+    # Build observation dict
+    obs_dict = obs.model_dump()
+    obs_dict.update(info)
+
+    return StepResponse(
+        observation=obs_dict,
+        reward=round(reward, 4),
+        done=done,
+    )
+
+
+@app.get("/state")
+def get_state():
+    """Return current environment state."""
+    task_name = current_task
+    if task_name not in envs:
+        raise HTTPException(status_code=400, detail="Call /reset first.")
+    return envs[task_name].state()
+
+
+@app.get("/tasks")
+def list_tasks():
+    """List available tasks with their configurations."""
+    tasks = {}
+    for name, config in TASK_CONFIGS.items():
+        tasks[name] = {
+            "max_steps": config["max_steps"],
+            "metabolism_base": config["metabolism_base"],
+            "noise_scale": config["noise_scale"],
+            "clinical_events": config.get("clinical_events", False),
+        }
+    return {"tasks": tasks}
 
 
 def main():

@@ -1,0 +1,1 @@
+# Interfaces module — placeholder for OpenEnv interface compatibility

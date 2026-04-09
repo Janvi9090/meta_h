@@ -8,6 +8,7 @@ app_port: 7860
 tags:
   - openenv
 license: mit
+pinned: false
 ---
 
 # 💊 Medication Dosing & Toxicity Control (OpenEnv)
@@ -134,6 +135,10 @@ An episode **passes** if: composite score ≥ 0.5 AND zero toxic events.
 meta_h/
 ├── inference.py              # Baseline agent (LLM + heuristic fallback)
 ├── app.py                    # FastAPI server (HF Spaces deployment)
+├── server/
+│   ├── __init__.py           # Package exports
+│   ├── app.py                # FastAPI application with OpenEnv endpoints
+│   └── medication_environment.py  # OpenEnv Environment wrapper
 ├── simulation/
 │   ├── __init__.py           # Package exports
 │   ├── environment.py        # MedicationEnv (two-compartment PK model)
@@ -173,9 +178,10 @@ docker run -p 7860:7860 medication-dosing
 | Method | Path     | Description                              |
 |--------|----------|------------------------------------------|
 | GET    | /        | Health check                             |
+| GET    | /health  | Health check (OpenEnv spec)              |
 | GET    | /tasks   | List available tasks with configs        |
 | POST   | /reset   | Reset env (body: `{"task": "easy"}`)     |
-| POST   | /step    | Take action (body: `{"dose": 5.0}`)     |
+| POST   | /step    | Take action (body: `{"action": {"dose": 5.0}}`) |
 | GET    | /state   | Get current environment state            |
 
 ### Example API Usage
@@ -188,22 +194,11 @@ curl -X POST http://localhost:7860/reset \
 # Administer a dose
 curl -X POST http://localhost:7860/step \
   -H "Content-Type: application/json" \
-  -d '{"dose": 10.0}'
+  -d '{"action": {"dose": 10.0}}'
 
 # Check state
 curl http://localhost:7860/state
 ```
----
-title: Medication Dosing Env
-emoji: 📚
-colorFrom: yellow
-colorTo: blue
-sdk: docker
-pinned: false
-license: mit
----
-
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
 
 ## 🤖 Agent Modes
 1. **LLM Mode** (when `HF_TOKEN` is set): Uses an OpenAI-compatible model to
